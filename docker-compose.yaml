@@ -1,0 +1,59 @@
+services:
+  localstack:
+    image: localstack/localstack:4.14
+    networks:
+      - audit-net
+    container_name: audit_localstack
+    ports:
+      - "4566:4566"
+    environment:
+      - SERVICES=kinesis,ssm
+      - DEFAULT_REGION=us-east-1
+    volumes:
+      - "./infra/init-aws.sh:/etc/localstack/init/ready.d/init-aws.sh"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  gateway:
+    build: .
+    networks:
+      - audit-net
+    container_name: audit_gateway
+    ports:
+      - "4000:4000"
+    environment:
+      - AWS_REGION=us-east-1
+      - AWS_ACCESS_KEY_ID=test
+      - AWS_SECRET_ACCESS_KEY=test
+      - AWS_ENDPOINT=http://localstack:4566
+      - SSM_STREAM_NAME_PATH=/audit/kinesis/raw-stream-name
+    depends_on:
+      localstack:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4000/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # The Load Tester
+  k6:
+    image: grafana/k6:latest
+    networks:
+      - audit-net
+    container_name: audit_load_test
+    depends_on:
+      gateway:
+        condition: service_healthy
+    volumes:
+      - ./load-test:/scripts
+    # Run the script against the internal Docker network name 'gateway'
+    command: run /scripts/k6-script.js --env TARGET_URL=http://gateway:4000/graphql
+
+
+networks:
+  audit-net:
+    driver: bridge
